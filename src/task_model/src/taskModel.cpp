@@ -2,7 +2,7 @@
 #include <queue>
 #include <unistd.h>
 #include <pthread.h>
-// #include <thread>
+#include <thread>
 #include <functional>
 
 #include <ros/ros.h>
@@ -48,13 +48,13 @@ class threadTask {
 
 
 template<class T>
-class blockingQueue {			// 阻塞队列: 
+class blockingQueue {			// 阻塞队列: 线程间互斥（同步）
 
 	private:
 		std::queue<threadTask<T>> que;
 		size_t capacity ;
-		pthread_mutex_t mutex;
-		pthread_cond_t cus_cond, pro_cond;
+		pthread_mutex_t mutex;				// 互斥锁 
+		pthread_cond_t cus_cond, pro_cond;	// 条件变量, 同步 
 
 	public:
 		blockingQueue(size_t s=5): capacity(s) {
@@ -68,24 +68,27 @@ class blockingQueue {			// 阻塞队列:
 			pthread_cond_destroy(&pro_cond);
 		}
 
-		bool pushBQ(const threadTask<T>& data){
+		bool pushBQ(const threadTask<T>& data){	// [生产者]
 
 			pthread_mutex_lock(&mutex);
 			while(que.size() >= capacity){
+
+				// 阻塞，等待别个释放条件变量来唤醒signal(&pro_cond)。同时释放锁，让其他持有该锁的对象获得执行。（原子操作）
+				// 被唤醒返回时，解除阻塞并重新加锁互斥量
 				pthread_cond_wait( &pro_cond, &mutex);
 			}
 
 			que.push(data);				// 任务入队
 
-			pthread_cond_signal ( &cus_cond ) ;
+			pthread_cond_signal ( &cus_cond ) ;	// 唤醒被 cus_cond阻塞的对象
 			pthread_mutex_unlock ( &mutex );
 			return true;
 		}
 
-		bool popBQ(threadTask<T>* data){
+		bool popBQ(threadTask<T>* data){		// [消费者]
 
 			pthread_mutex_lock( &mutex) ;
-			while(que.empty() ){
+			while(que.empty()) {
 
 				pthread_cond_wait( &cus_cond ,&mutex);
 			}
@@ -93,7 +96,7 @@ class blockingQueue {			// 阻塞队列:
 			*data = que.front();		// 取出任务，执行
 			que.pop();
 
-			pthread_cond_signal( &pro_cond );
+			pthread_cond_signal( &pro_cond );		
 			pthread_mutex_unlock ( &mutex);
 			return true;
 		}
@@ -102,16 +105,16 @@ class blockingQueue {			// 阻塞队列:
 template<class T>
 class threadPools {				// 基于阻塞队列的线程池
 	public:	
-		static void* threadEntry(void* arg) {
-			threadPools* p = (threadPools *) arg; 
+		// static void* threadEntry(void* arg) {		// [消费者]
+		// 	threadPools* instance = (threadPools *) arg; 
 
-			while(1) {
-				threadTask<T> task;		// 取任务执行
-				p->_queue.popBQ(&task);
-				task.exec();
-			}
-			return NULL;
-		}
+		// 	while(1) {
+		// 		threadTask<T> task;		// 取任务执行
+		// 		instance->_queue.popBQ(&task);
+		// 		task.exec();
+		// 	}
+		// 	return nullptr;
+		// }
 
 		threadPools(int max_poools_num = 5, int queue= 10)
 							: _max_pool_nums (max_poools_num) ,
@@ -121,20 +124,28 @@ class threadPools {				// 基于阻塞队列的线程池
 			printf("Thread pool nums: %d\n", _max_pool_nums);
 			printf("Task queue size: %d\n", queue);
 
-			for ( int i=0 ; i<_max_pool_nums ;++i) {
+			for ( int i=0 ; i<_max_pool_nums ;++i) {	
 
-				if (pthread_create(&tid[i], NULL, &threadPools::threadEntry, this) == 0) {
+				/* C pthread */
+				// if (pthread_create(&tid[i], NULL, &threadPools::threadEntry, this) == 0) {	
 
-					pthread_detach(tid[i]);
-					printf("thread%d pid: %ld\n", i+1, tid[i]);
-				} 
-				else 
-					exit(-1);
+				// 	pthread_detach(tid[i]);
+				// 	printf("thread%d pid: %ld\n", i, tid[i]);
+				// } 
+				// else 
+				// 	exit(-1);
 
-				// // C++ thread lamda
-				// std::thread([=] ()-> void {
-				// // ... ...	
-				// }).detach() ;
+				/* C++11 thread lamda */
+				std::thread([this, &i] () -> void { 
+					
+					std::cout << "thread" << i << " pid: " << std::this_thread::get_id() << std::endl;
+					while(true) {
+
+						threadTask<T> task;		// 取任务执行
+						this->_queue.popBQ(&task);
+						task.exec();
+					}
+				}).detach() ;
 			}
 		}
 
@@ -143,7 +154,7 @@ class threadPools {				// 基于阻塞队列的线程池
 		}
 
 		// 放入任务队列
-		bool taskPush(const threadTask<T>& task) {
+		bool taskPush(const threadTask<T>& task) {		// 	[生产者]
 			return _queue.pushBQ(task);
 		}
 
