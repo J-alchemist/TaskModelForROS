@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="task_model" type="taskModel" name="taskModel" output="screen" />
+</launch>
+
+
